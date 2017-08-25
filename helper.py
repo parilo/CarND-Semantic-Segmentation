@@ -124,6 +124,32 @@ def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape)
 
         yield os.path.basename(image_file), np.array(street_im)
 
+def gen_test_images(data_folder, image_shape):
+    """
+    Generate test output using the test images
+    :param data_folder: Path to the folder that contains the datasets
+    :param image_shape: Tuple - Shape of image
+    :return: Output for for each test image
+    """
+
+    label_paths = {
+        re.sub(r'_(lane|road)_', '_', os.path.basename(path)): path
+        for path in glob(os.path.join(data_folder, 'gt_image_2', '*_road_*.png'))}
+
+    background_color = np.array([255, 0, 0])
+
+    for image_file in glob(os.path.join(data_folder, 'image_2', '*.png')):
+        image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
+
+        gt_image_file = label_paths[os.path.basename(image_file)]
+        gt_image = scipy.misc.imresize(scipy.misc.imread(gt_image_file), image_shape)
+
+        gt_bg = np.all(gt_image == background_color, axis=2)
+        gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
+        gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
+
+        yield image, gt_image
+
 
 def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image):
     # Make folder for current run

@@ -1,5 +1,6 @@
 import os.path
 import tensorflow as tf
+import numpy as np
 import helper
 import warnings
 from distutils.version import LooseVersion
@@ -42,6 +43,9 @@ def load_vgg(sess, vgg_path):
     )
 tests.test_load_vgg(load_vgg, tf)
 
+vgg_out = None
+middle_layer = None
+upconv2 = None
 
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     """
@@ -53,34 +57,40 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     :return: The Tensor for the last layer of output
     """
 
-    print(vgg_layer3_out) # 256
-    print(vgg_layer4_out) # 512
-    print(vgg_layer7_out)
+    global middle_layer, vgg_out
+    # print(vgg_layer3_out) # 256
+    # print(vgg_layer4_out) # 512
+    # print(vgg_layer7_out)
+
+    vgg_out = vgg_layer7_out
 
     # 1 x 1 conv
     middle_layer = tf.layers.conv2d(tf.stop_gradient(vgg_layer7_out), 4096, 1, 1, kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='middle_layer')
 
-    upconv1 = tf.layers.conv2d_transpose(middle_layer, 512, [7, 7], [1, 1], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv1')
-    upconv2 = tf.layers.conv2d_transpose(middle_layer, 512, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv2')
-    upconv3 = tf.layers.conv2d_transpose(middle_layer, 512, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1))
-    upconv4 = tf.layers.conv2d_transpose(middle_layer, 256, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1))
-    upconv5 = tf.layers.conv2d_transpose(middle_layer, 128, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv5')
-    upconv6 = tf.layers.conv2d_transpose(middle_layer,  64, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv6')
-    upconv7 = tf.layers.conv2d_transpose(middle_layer, num_classes, [3, 3], [1, 1], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='model_output')
+    # upconv1 = tf.layers.conv2d_transpose(middle_layer, 512, [7, 7], [1, 1], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv1')
+    # upconv2 = tf.layers.conv2d_transpose(upconv1, 512, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv2')
 
+    upconv3 = tf.layers.conv2d_transpose(middle_layer, 512, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1))
     upconv3 = tf.multiply(0.5, tf.add(upconv3, tf.stop_gradient(vgg_layer4_out)), name='upconv3')
+
+    upconv4 = tf.layers.conv2d_transpose(upconv3, 256, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1))
     upconv4 = tf.multiply(0.5, tf.add(upconv4, tf.stop_gradient(vgg_layer3_out)), name='upconv4')
 
-    print(middle_layer)
-    print(upconv1)
-    print(upconv2)
-    print(upconv3)
-    print(upconv4)
-    print(upconv5)
-    print(upconv6)
-    print(upconv7)
+    upconv5 = tf.layers.conv2d_transpose(upconv4, 128, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv5')
+    upconv6 = tf.layers.conv2d_transpose(upconv5,  64, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv6')
+    upconv7 = tf.layers.conv2d_transpose(upconv6, num_classes, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='model_output')
 
-    return upconv7
+
+    # print(middle_layer)
+    # print(upconv1)
+    # print(upconv2)
+    # print(upconv3)
+    # print(upconv4)
+    # print(upconv5)
+    # print(upconv6)
+    # print(upconv7)
+
+    return tf.identity(upconv7, name='model_output_op')
 tests.test_layers(layers)
 
 
@@ -94,8 +104,8 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
 
-    print (nn_last_layer)
-    print (correct_label)
+    # print (nn_last_layer)
+    # print (correct_label)
 
     # intersection over union
     # iou, iou_op = tf.metrics.mean_iou(correct_label, nn_last_layer, num_classes)
@@ -108,8 +118,44 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
 tests.test_optimize(optimize)
 
 
+def check_iou(sess, data_dir, image_shape, logits, input_image, keep_prob, correct_label, iou):
+
+    print('--- check iou')
+    for image, label in helper.gen_test_images(os.path.join(data_dir, 'data_road/training'), image_shape):
+        iou = sess.run(
+            [iou],
+            {
+                keep_prob: 1.0,
+                input_image: [image],
+                correct_label: [label]
+            }
+        )
+        print(iou)
+        return
+        # print(image.shape)
+        # print(label.shape)
+        # im_softmax = sess.run(
+        #     [tf.nn.softmax(logits)],
+        #     {keep_prob: 1.0, input_image: [image]})
+        # im_softmax = im_softmax[0][0]
+        # segmentation_indices = (im_softmax > 0.5)
+        # segmentation = np.zeros_like(im_softmax)
+        # segmentation[segmentation_indices] = 1
+        # print(segmentation.shape)
+        # print(segmentation)
+        # return
+        # im_softmax = im_softmax[0][:, 1].reshape(image_shape[0], image_shape[1])
+        # segmentation = (im_softmax > 0.5)
+        # print(segmentation.shape)
+        # print(segmentation)
+        # mask = np.dot(segmentation, np.array([[0, 255, 0, 127]]))
+        # mask = scipy.misc.toimage(mask, mode="RGBA")
+        # street_im = scipy.misc.toimage(image)
+        # street_im.paste(mask, box=None, mask=mask)
+
+
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate):
+             correct_label, keep_prob, learning_rate, nn_output, save_inference_samples_func):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -124,9 +170,26 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     :param learning_rate: TF Placeholder for learning rate
     """
 
+
+    saver = tf.train.Saver(max_to_keep=None)
+    # saver.restore(self.sess, "submissions/6/model-16500000.ckpt")
+
     for i in range(epochs):
+        print('--- epoch: {}'.format(i))
+
         batches = get_batches_fn(batch_size)
         for image_batch, label_batch in batches:
+
+            # s = sess.run(tf.shape(nn_output),
+            # {
+            #     input_image: image_batch,
+            #     correct_label: label_batch,
+            #     keep_prob: 0.5,
+            #     learning_rate: 1e-4
+            # })
+            # print('--- nn output')
+            # print(s)
+            # return
 
             loss, _ = sess.run(
                 [cross_entropy_loss, train_op],
@@ -140,9 +203,22 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
 
             print ('loss: {}'.format(loss))
 
-    pass
-tests.test_train_nn(train_nn)
+        if i%100 == 0:
+            save_path = saver.save(sess, 'ckpt/model-{}.ckpt'.format(i))
+            print("Model saved in file: %s" % save_path)
+            save_inference_samples_func()
 
+    pass
+# tests.test_train_nn(train_nn)
+
+
+def load_checkpoint(sess, ckpt_path):
+    saver = tf.train.import_meta_graph('ckpt/model.ckpt.meta')
+    saver.restore(sess, ckpt_path)
+    # for v in tf.global_variables():
+    #     print(v.name)
+    # for op in tf.get_default_graph().get_operations():
+    #     print(op.name)
 
 def run():
     num_classes = 2
@@ -158,7 +234,36 @@ def run():
     # You'll need a GPU with at least 10 teraFLOPS to train on.
     #  https://www.cityscapes-dataset.com/
 
+    epochs = 1001
+    batch_size = 24
+
     with tf.Session() as sess:
+
+        correct_label = tf.placeholder(tf.float32, shape=(None, image_shape[0], image_shape[1], 2))
+        learning_rate = tf.placeholder(tf.float32, shape=())
+
+        # https://stackoverflow.com/questions/35164529/in-tensorflow-is-there-any-way-to-just-initialize-uninitialised-variables/43601894#43601894
+        def initialize_uninitialized(sess):
+            global_vars          = tf.global_variables()
+            is_not_initialized   = sess.run([tf.is_variable_initialized(var) for var in global_vars])
+            not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
+            if len(not_initialized_vars):
+                sess.run(tf.variables_initializer(not_initialized_vars))
+
+        load_checkpoint(sess, 'ckpt/model-100.ckpt')
+        g = tf.get_default_graph()
+        logits = g.get_tensor_by_name('model_output_op:0')
+        input_image = g.get_tensor_by_name('image_input:0')
+        keep_prob = g.get_tensor_by_name('keep_prob:0')
+        iou = tf.metrics.mean_iou(tf.argmax(correct_label, 3), tf.argmax(logits, 3), num_classes)
+
+        initialize_uninitialized(sess)
+        sess.run(tf.local_variables_initializer())
+
+        check_iou(sess, data_dir, image_shape, logits, input_image, keep_prob, correct_label, iou)
+
+        return
+
         # Path to vgg model
         vgg_path = os.path.join(data_dir, 'vgg')
         # Create function to get batches
@@ -170,16 +275,21 @@ def run():
         # Build NN using load_vgg, layers, and optimize function
         (image_input, keep_prob, vgg_layer3_out, vgg_layer4_out, vgg_layer7_out) = load_vgg(sess, os.path.join(data_dir, 'vgg'))
         nn_output = layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes)
+        print(nn_output)
 
-        correct_label = tf.placeholder(tf.float32, shape=image_shape)
-        learning_rate = tf.placeholder(tf.float32, shape=())
-        keep_prob = tf.placeholder(tf.float32, shape=())
         (logits, train_op, cross_entropy_loss) = optimize(nn_output, correct_label, learning_rate, num_classes)
 
-        # Train NN using the train_nn function
+        # saver = tf.train.Saver(max_to_keep=None)
+        # save_path = saver.save(sess, 'ckpt/model.ckpt')
+        # return
 
-        # TODO: Save inference data using helper.save_inference_samples
-        #  helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
+        def save_inference_samples_func():
+            helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input)
+
+        # Train NN using the train_nn function
+        train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, image_input,
+                     correct_label, keep_prob, learning_rate, nn_output, save_inference_samples_func)
+
 
         # OPTIONAL: Apply the trained model to a video
 
