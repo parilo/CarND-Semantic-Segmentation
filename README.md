@@ -1,6 +1,6 @@
 # Road Semantic Segmentation with Full Convolutional Network on Kitti dataset
 
-[Road surface segmentation](https://github.com/parilo/CarND-Semantic-Segmentation/blob/master/sample.png)
+![Road surface segmentation](https://github.com/parilo/CarND-Semantic-Segmentation/blob/master/sample.png "FCN Road Semantic Segmentation Result Example")
 
 This is project 2 of Term 3 of Udacity Self-Driving Car Nanodegree. The goal of the project is to classify each pixel on the image if it is road or not. Such tasks are called semantic segmentation of the image.
 
