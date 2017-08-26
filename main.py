@@ -233,12 +233,14 @@ def test_checkpoint(runs_dir, data_dir, image_shape, sess, ckpt, num_classes):
     load_checkpoint(sess, ckpt)
     g = tf.get_default_graph()
     nn_last_layer = g.get_tensor_by_name('model_output_op:0')
+    logits = tf.reshape(nn_last_layer, (-1, num_classes))
     image_input = g.get_tensor_by_name('image_input:0')
     keep_prob = g.get_tensor_by_name('keep_prob:0')
 
     initialize_uninitialized(sess)
 
     calc_iou(sess, data_dir, image_shape, nn_last_layer, image_input, keep_prob)
+    helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input)
 
 
 def run():
