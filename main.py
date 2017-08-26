@@ -5,6 +5,7 @@ import helper
 import warnings
 from distutils.version import LooseVersion
 import project_tests as tests
+import argparse
 
 
 # Check TensorFlow Version
@@ -16,6 +17,18 @@ if not tf.test.gpu_device_name():
     warnings.warn('No GPU found. Please use a GPU to train your neural network.')
 else:
     print('Default GPU Device: {}'.format(tf.test.gpu_device_name()))
+
+
+# I cecided to make this parameters global
+# because it is inconvenient to pass it from func to func
+num_classes = 2
+image_shape = (160, 576)
+train_keep_prob_value = 0.5
+learning_rate_value = 1e-4
+data_dir = './data'
+runs_dir = './runs'
+epochs = 500 # on 200 epchs it becomes greater than 80 IOU on train set, 500 is about 85 IOU
+batch_size = 24
 
 
 def load_vgg(sess, vgg_path):
@@ -43,10 +56,6 @@ def load_vgg(sess, vgg_path):
     )
 tests.test_load_vgg(load_vgg, tf)
 
-vgg_out = None
-middle_layer = None
-upconv2 = None
-
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     """
     Create the layers for a fully convolutional network.  Build skip-layers using the vgg layers.
@@ -57,18 +66,8 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     :return: The Tensor for the last layer of output
     """
 
-    global middle_layer, vgg_out
-    # print(vgg_layer3_out) # 256
-    # print(vgg_layer4_out) # 512
-    # print(vgg_layer7_out)
-
-    vgg_out = vgg_layer7_out
-
     # 1 x 1 conv
     middle_layer = tf.layers.conv2d(tf.stop_gradient(vgg_layer7_out), 4096, 1, 1, kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='middle_layer')
-
-    # upconv1 = tf.layers.conv2d_transpose(middle_layer, 512, [7, 7], [1, 1], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv1')
-    # upconv2 = tf.layers.conv2d_transpose(upconv1, 512, [3, 3], [2, 2], padding='VALID', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv2')
 
     upconv3 = tf.layers.conv2d_transpose(middle_layer, 512, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1))
     upconv3 = tf.multiply(0.5, tf.add(upconv3, tf.stop_gradient(vgg_layer4_out)), name='upconv3')
@@ -80,19 +79,8 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     upconv6 = tf.layers.conv2d_transpose(upconv5,  64, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='upconv6')
     upconv7 = tf.layers.conv2d_transpose(upconv6, num_classes, [3, 3], [2, 2], padding='same', kernel_initializer=tf.truncated_normal_initializer(0, 1e-1), name='model_output')
 
-
-    # print(middle_layer)
-    # print(upconv1)
-    # print(upconv2)
-    # print(upconv3)
-    # print(upconv4)
-    # print(upconv5)
-    # print(upconv6)
-    # print(upconv7)
-
     return tf.identity(upconv7, name='model_output_op')
 tests.test_layers(layers)
-
 
 def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     """
@@ -104,11 +92,22 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
 
-    # print (nn_last_layer)
-    # print (correct_label)
+    # for educational purposes I decided to calculate IOU by myself
+    im_softmax = tf.nn.softmax(nn_last_layer)
+    segmentation = tf.where(im_softmax > 0.5, tf.ones_like(im_softmax), tf.zeros_like(im_softmax))
+    batch_size = tf.shape(segmentation)[0]
 
-    # intersection over union
-    # iou, iou_op = tf.metrics.mean_iou(correct_label, nn_last_layer, num_classes)
+    # calculating intersection count for each image in the batch
+    intersection_image = tf.multiply(segmentation[:,:,:,1], correct_label[:,:,:,1])
+    intersection_set = tf.reshape(intersection_image, [batch_size, -1])
+    intersection = tf.cast(tf.reduce_sum(intersection_set, axis=1, name='intersection'), dtype=tf.float32)
+
+    # calculating union count for each image in the batch
+    union_image = tf.where(tf.add(segmentation, correct_label) > 0.5, tf.ones_like(im_softmax), tf.zeros_like(im_softmax))[:,:,:,1]
+    union_set = tf.reshape(union_image, [batch_size, -1])
+    union = tf.cast(tf.reduce_sum(union_set, axis=1, name='union'), dtype=tf.float32)
+
+    iou = tf.identity(intersection / union, name='iou')
 
     optimizer = tf.train.AdamOptimizer(learning_rate)
     logits = tf.reshape(nn_last_layer, (-1, num_classes))
@@ -118,44 +117,47 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
 tests.test_optimize(optimize)
 
 
-def check_iou(sess, data_dir, image_shape, logits, input_image, keep_prob, correct_label, iou):
+def calc_iou(sess, data_dir, image_shape, nn_last_layer, input_image, keep_prob):
+    """
+    Calculate mean IOU on training dataset. Function prints IOU of batches during calculation
+    :param sess: TensorFLow session
+    :param data_dir: Path to the folder that contains the datasets
+    :param image_shape: input image size
+    :param nn_last_layer: TF Tensor of the last layer in the neural network
+    :param input_image: TF Placeholder for input images
+    :param keep_prob: TF Placeholder for dropout keep probability
+    :return: float32 mean IOU over train dataset
+    """
 
-    print('--- check iou')
-    for image, label in helper.gen_test_images(os.path.join(data_dir, 'data_road/training'), image_shape):
-        iou = sess.run(
-            [iou],
+    gen_batches_fn = helper.gen_batch_function(os.path.join(data_dir, 'data_road/training'), image_shape)
+    batch_generator = gen_batches_fn(16)
+
+    g = tf.get_default_graph()
+    correct_label = g.get_tensor_by_name('correct_label:0')
+    iou = g.get_tensor_by_name('iou:0')
+
+    all_iou = []
+    print('--- train dataset iou calculation')
+    for image, labels in batch_generator:
+        iou_v = sess.run(
+            iou,
             {
                 keep_prob: 1.0,
-                input_image: [image],
-                correct_label: [label]
-            }
-        )
-        print(iou)
-        return
-        # print(image.shape)
-        # print(label.shape)
-        # im_softmax = sess.run(
-        #     [tf.nn.softmax(logits)],
-        #     {keep_prob: 1.0, input_image: [image]})
-        # im_softmax = im_softmax[0][0]
-        # segmentation_indices = (im_softmax > 0.5)
-        # segmentation = np.zeros_like(im_softmax)
-        # segmentation[segmentation_indices] = 1
-        # print(segmentation.shape)
-        # print(segmentation)
-        # return
-        # im_softmax = im_softmax[0][:, 1].reshape(image_shape[0], image_shape[1])
-        # segmentation = (im_softmax > 0.5)
-        # print(segmentation.shape)
-        # print(segmentation)
-        # mask = np.dot(segmentation, np.array([[0, 255, 0, 127]]))
-        # mask = scipy.misc.toimage(mask, mode="RGBA")
-        # street_im = scipy.misc.toimage(image)
-        # street_im.paste(mask, box=None, mask=mask)
+                input_image: image,
+                correct_label: labels
+            })
+
+        mean_batch_iou = np.mean(iou_v)
+        all_iou.append(mean_batch_iou)
+        print('   batch iou: {}'.format(mean_batch_iou))
+
+    mean_iou = np.mean(all_iou)
+    print('--- dataset iou: {}'.format(mean_iou))
+    return mean_iou
 
 
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate, nn_output, save_inference_samples_func):
+             correct_label, keep_prob, learning_rate):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -170,26 +172,11 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     :param learning_rate: TF Placeholder for learning rate
     """
 
-
-    saver = tf.train.Saver(max_to_keep=None)
-    # saver.restore(self.sess, "submissions/6/model-16500000.ckpt")
-
     for i in range(epochs):
         print('--- epoch: {}'.format(i))
 
         batches = get_batches_fn(batch_size)
         for image_batch, label_batch in batches:
-
-            # s = sess.run(tf.shape(nn_output),
-            # {
-            #     input_image: image_batch,
-            #     correct_label: label_batch,
-            #     keep_prob: 0.5,
-            #     learning_rate: 1e-4
-            # })
-            # print('--- nn output')
-            # print(s)
-            # return
 
             loss, _ = sess.run(
                 [cross_entropy_loss, train_op],
@@ -201,30 +188,67 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
                 }
             )
 
-            print ('loss: {}'.format(loss))
+            print ('train batch loss: {}'.format(loss))
 
-        if i%100 == 0:
+        if i%100 == 99:
+
+            g = tf.get_default_graph()
+            nn_last_layer = g.get_tensor_by_name('model_output_op:0')
+            calc_iou(sess, data_dir, image_shape, nn_last_layer, input_image, keep_prob)
+
+            saver = tf.train.Saver(max_to_keep=None)
             save_path = saver.save(sess, 'ckpt/model-{}.ckpt'.format(i))
             print("Model saved in file: %s" % save_path)
-            save_inference_samples_func()
 
     pass
-# tests.test_train_nn(train_nn)
+tests.test_train_nn(train_nn)
+
+
+# for not to rewrite VGG variables during initialization
+# code taken from
+# https://stackoverflow.com/questions/35164529/in-tensorflow-is-there-any-way-to-just-initialize-uninitialised-variables/43601894#43601894
+def initialize_uninitialized(sess):
+    """
+    Initialize only not initialized variables in tensorflow.
+    """
+    global_vars          = tf.global_variables()
+    is_not_initialized   = sess.run([tf.is_variable_initialized(var) for var in global_vars])
+    not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
+    if len(not_initialized_vars):
+        sess.run(tf.variables_initializer(not_initialized_vars))
 
 
 def load_checkpoint(sess, ckpt_path):
-    saver = tf.train.import_meta_graph('ckpt/model.ckpt.meta')
+    """
+    Load saved graph checkpoint
+    :param sess: TensorFlow session
+    :param ckpt_path: path like path/to/your/*.ckpt
+    """
+    saver = tf.train.import_meta_graph(ckpt_path + '.meta')
     saver.restore(sess, ckpt_path)
-    # for v in tf.global_variables():
-    #     print(v.name)
-    # for op in tf.get_default_graph().get_operations():
-    #     print(op.name)
+
+
+def test_checkpoint(runs_dir, data_dir, image_shape, sess, ckpt, num_classes):
+
+    load_checkpoint(sess, ckpt)
+    g = tf.get_default_graph()
+    nn_last_layer = g.get_tensor_by_name('model_output_op:0')
+    image_input = g.get_tensor_by_name('image_input:0')
+    keep_prob = g.get_tensor_by_name('keep_prob:0')
+
+    initialize_uninitialized(sess)
+
+    calc_iou(sess, data_dir, image_shape, nn_last_layer, image_input, keep_prob)
+
 
 def run():
-    num_classes = 2
-    image_shape = (160, 576)
-    data_dir = './data'
-    runs_dir = './runs'
+
+    parser = argparse.ArgumentParser(description='Train or evaluate semantic segmentation FCN')
+    parser.add_argument('-t', '--train', action='store_true', help='train semantic segmentation FCN', required=False)
+    parser.add_argument('-e', '--evaluate', metavar=('CKPT_PATH'), type=str, help='evaluate semantic segmentation FCN from checkpoint. Path like path/to/your/*.ckpt', required=False)
+
+    args = parser.parse_args()
+
     tests.test_for_kitti_dataset(data_dir)
 
     # Download pretrained vgg model
@@ -234,35 +258,14 @@ def run():
     # You'll need a GPU with at least 10 teraFLOPS to train on.
     #  https://www.cityscapes-dataset.com/
 
-    epochs = 1001
-    batch_size = 24
-
     with tf.Session() as sess:
 
-        correct_label = tf.placeholder(tf.float32, shape=(None, image_shape[0], image_shape[1], 2))
+        if args.evaluate is not None:
+            test_checkpoint(runs_dir, data_dir, image_shape, sess, args.evaluate, num_classes)
+            return
+
+        correct_label = tf.placeholder(tf.float32, shape=(None, image_shape[0], image_shape[1], 2), name='correct_label')
         learning_rate = tf.placeholder(tf.float32, shape=())
-
-        # https://stackoverflow.com/questions/35164529/in-tensorflow-is-there-any-way-to-just-initialize-uninitialised-variables/43601894#43601894
-        def initialize_uninitialized(sess):
-            global_vars          = tf.global_variables()
-            is_not_initialized   = sess.run([tf.is_variable_initialized(var) for var in global_vars])
-            not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
-            if len(not_initialized_vars):
-                sess.run(tf.variables_initializer(not_initialized_vars))
-
-        load_checkpoint(sess, 'ckpt/model-100.ckpt')
-        g = tf.get_default_graph()
-        logits = g.get_tensor_by_name('model_output_op:0')
-        input_image = g.get_tensor_by_name('image_input:0')
-        keep_prob = g.get_tensor_by_name('keep_prob:0')
-        iou = tf.metrics.mean_iou(tf.argmax(correct_label, 3), tf.argmax(logits, 3), num_classes)
-
-        initialize_uninitialized(sess)
-        sess.run(tf.local_variables_initializer())
-
-        check_iou(sess, data_dir, image_shape, logits, input_image, keep_prob, correct_label, iou)
-
-        return
 
         # Path to vgg model
         vgg_path = os.path.join(data_dir, 'vgg')
@@ -275,21 +278,16 @@ def run():
         # Build NN using load_vgg, layers, and optimize function
         (image_input, keep_prob, vgg_layer3_out, vgg_layer4_out, vgg_layer7_out) = load_vgg(sess, os.path.join(data_dir, 'vgg'))
         nn_output = layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes)
-        print(nn_output)
 
         (logits, train_op, cross_entropy_loss) = optimize(nn_output, correct_label, learning_rate, num_classes)
 
-        # saver = tf.train.Saver(max_to_keep=None)
-        # save_path = saver.save(sess, 'ckpt/model.ckpt')
-        # return
-
-        def save_inference_samples_func():
-            helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input)
+        initialize_uninitialized(sess)
 
         # Train NN using the train_nn function
         train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, image_input,
-                     correct_label, keep_prob, learning_rate, nn_output, save_inference_samples_func)
+                     correct_label, keep_prob, learning_rate)
 
+        helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input)
 
         # OPTIONAL: Apply the trained model to a video
 
